@@ -3,7 +3,6 @@
     "name": "webpic",
     "slug": "webpic",
     "version": "1.0.0",
-    "jsEngine": "hermes",
 
     "ios": {
       "bundleIdentifier": "com.meisam6788.webpic",
