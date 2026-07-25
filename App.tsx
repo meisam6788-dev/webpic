@@ -1,8 +1,33 @@
+import { BugReport } from './src/components/BugReport';
 import { StatusBar } from 'expo-status-bar';
 import { StyleSheet, Text, View, TouchableOpacity } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { useEditorStore } from './src/store/useEditorStore';
 import ImageCanvas from './src/components/canvas/ImageCanvas'; // فراخوانی بوم جدید
+
+import { Alert, Linking } from 'react-native';
+
+// سیستم شکار خطاهای ناگهانی (Crash Catcher)
+const globalErrorHandler = ErrorUtils.getGlobalHandler();
+ErrorUtils.setGlobalHandler((error, isFatal) => {
+  if (isFatal) {
+    Alert.alert(
+      'توقف ناگهانی برنامه',
+      'متاسفانه اپلیکیشن با یک خطای غیرمنتظره مواجه شد. لطفاً این خطا را برای ما ارسال کنید تا در آپدیت بعدی برطرف شود.',
+      [
+        { text: 'انصراف', style: 'cancel' },
+        { 
+          text: 'ارسال گزارش خطا', 
+          onPress: () => {
+            Linking.openURL(`mailto:meisam6788@gmail.com?subject=گزارش کرش وب‌پیک&body=شرح خطا:%0D%0A${error.message}`);
+          } 
+        }
+      ]
+    );
+  } else {
+    globalErrorHandler(error, isFatal);
+  }
+});
 
 export default function App() {
     const { image, setImage } = useEditorStore();
@@ -45,7 +70,7 @@ export default function App() {
                     onPress={pickImage}
                     activeOpacity={0.8}
                 >
-                    <Text style={styles.buttonText}>گالری</Text>
+                    <Text style={styles.buttonText}>Gallery</Text>
                 </TouchableOpacity>
             </View>
         </View>
