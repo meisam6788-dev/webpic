@@ -1,40 +1,35 @@
 import React, { useRef, useState, useEffect } from 'react';
 import {
     Animated, PanResponder, StyleSheet, View, Text,
-    TouchableOpacity, TextInput, ScrollView, Platform, KeyboardAvoidingView, StatusBar, Alert
+    TouchableOpacity, TextInput, ScrollView, Platform, KeyboardAvoidingView, StatusBar, Alert, BackHandler
 } from 'react-native';
 import Slider from '@react-native-community/slider';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-import * as MediaLibrary from 'expo-media-library';
+import * as MediaLibrary from 'expo-media-library/legacy';
 import * as Sharing from 'expo-sharing';
 import ViewShot from 'react-native-view-shot';
+import * as ImageManipulator from 'expo-image-manipulator';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useEditorStore } from '../../store/useEditorStore';
 import CropFrame from './CropFrame';
 import WatermarkOverlay from './WatermarkOverlay';
 import { useUndoRedo } from './useUndoRedo';
 
 export default function ImageCanvas() {
-    const { image } = useEditorStore();
+    const { image, setImage } = useEditorStore();
     const viewShotRef = useRef<any>(null);
     const [isDarkMode, setIsDarkMode] = useState(true);
 
     const [activeCategory, setActiveCategory] = useState('crop');
     const [activeAdjustTool, setActiveAdjustTool] = useState('brightness');
     const [activeCropTool, setActiveCropTool] = useState('aspect');
-    const [activeWatermarkTool, setActiveWatermarkTool] = useState('image');
+    const [activeWatermarkTool, setActiveWatermarkTool] = useState('text');
 
-    // اتصال سیستم تاریخچه به تنظیمات نور و رنگ
-    const {
-        state: adjustments,
-        updateState: setAdjustments,
-        undo,
-        redo,
-        canUndo,
-        canRedo
-    } = useUndoRedo({ brightness: 0, contrast: 1, saturation: 1, warmth: 0 });
+    const { state: adjustments, updateState: setAdjustments, undo, redo, canUndo, canRedo } = useUndoRedo({ brightness: 0, contrast: 1, saturation: 1, warmth: 0 });
 
-    const [wmText, setWmText] = useState('webpic.');
+    // وضعیت‌های واترمارک
+    const [wmText, setWmText] = useState('');
     const [wmSize, setWmSize] = useState(24);
     const [wmColor, setWmColor] = useState('#FFFFFF');
     const [wmBgColor, setWmBgColor] = useState('transparent');
@@ -44,6 +39,7 @@ export default function ImageCanvas() {
     const [wmRotation, setWmRotation] = useState(0);
 
     const [cropSize, setCropSize] = useState({ width: 1000, height: 1000 });
+    const [cropBgColor, setCropBgColor] = useState('transparent');
     const [customW, setCustomW] = useState('1000');
     const [customH, setCustomH] = useState('1000');
     const [isLocked, setIsLocked] = useState(true);
@@ -64,9 +60,48 @@ export default function ImageCanvas() {
     const currentFlipY = useRef(0);
 
     const activeCategoryRef = useRef(activeCategory);
+
     useEffect(() => {
         activeCategoryRef.current = activeCategory;
     }, [activeCategory]);
+
+    // لود کردن تنظیمات واترمارک ذخیره شده
+    useEffect(() => {
+        const loadSettings = async () => {
+            try {
+                const savedData = await AsyncStorage.getItem('watermark_settings');
+                if (savedData) {
+                    const parsed = JSON.parse(savedData);
+                    if (parsed.text !== undefined) setWmText(parsed.text);
+                    if (parsed.color) setWmColor(parsed.color);
+                    if (parsed.size) setWmSize(parsed.size);
+                    if (parsed.font) setWmFont(parsed.font);
+                    if (parsed.opacity) setWmOpacity(parsed.opacity);
+                    if (parsed.rotation) setWmRotation(parsed.rotation);
+                    if (parsed.bgColor) setWmBgColor(parsed.bgColor);
+                }
+            } catch (e) {
+                console.log('Error loading watermark settings', e);
+            }
+        };
+        loadSettings();
+    }, []);
+
+    // ذخیره خودکار تنظیمات واترمارک
+    useEffect(() => {
+        const saveSettings = async () => {
+            try {
+                const settings = JSON.stringify({ 
+                    text: wmText, color: wmColor, size: wmSize, 
+                    font: wmFont, opacity: wmOpacity, rotation: wmRotation, bgColor: wmBgColor 
+                });
+                await AsyncStorage.setItem('watermark_settings', settings);
+            } catch (e) {
+                console.log('Error saving watermark settings', e);
+            }
+        };
+        saveSettings();
+    }, [wmText, wmColor, wmSize, wmFont, wmOpacity, wmRotation, wmBgColor]);
 
     const colorsList: string[] = ['transparent', '#FFFFFF', '#000000', '#FF3B30', '#FF9500', '#FFCC00', '#4CD964', '#5AC8FA', '#007AFF', '#5856D6', '#FF2D55'];
     const fontsList: string[] = ['System', 'serif', 'sans-serif', 'monospace'];
@@ -130,46 +165,35 @@ export default function ImageCanvas() {
     ).current;
 
     if (!image) return null;
-
-    // تابع یکپارچه برای تغییر تنظیمات و ثبت در تاریخچه
+        
     const updateAdjustment = (key: string, value: number) => {
         setAdjustments({ ...adjustments, [key]: value });
     };
 
-    // ذخیره در گالری با متد پایدار و بدون کرش
+    // خروجی استاندارد WebP با سایز و حجم دقیق
     const handleSaveExport = async () => {
         try {
             const { status } = await MediaLibrary.requestPermissionsAsync();
             if (status !== 'granted') {
-                Alert.alert('Error', 'Permission required');
+                Alert.alert('خطا', 'مجوز گالری داده نشد.');
                 return;
             }
-            const uri = await viewShotRef.current?.capture();
-            if (uri) {
-                await (MediaLibrary as any).saveToLibraryAsync(uri);
-                Alert.alert('Success', 'Saved to Gallery');
-            }
-        } catch (error) {
-            console.error(error);
-            Alert.alert('Error', 'Failed to save');
-        }
-    };
+            
+            const rawUri = await viewShotRef.current?.capture();
+            if (rawUri) {
+                // تنظیم دقیق سایز به اندازه انتخاب شده کاربر و فشرده سازی مناسب
+                const manipResult = await ImageManipulator.manipulateAsync(
+                    rawUri,
+                    [{ resize: { width: cropSize.width, height: cropSize.height } }],
+                    { compress: 0.8, format: ImageManipulator.SaveFormat.WEBP }
+                );
 
-    // قابلیت اشتراک‌گذاری مستقیم
-    const handleShare = async () => {
-        try {
-            const uri = await viewShotRef.current?.capture();
-            if (uri) {
-                const isAvailable = await Sharing.isAvailableAsync();
-                if (isAvailable) {
-                    await Sharing.shareAsync(uri);
-                } else {
-                    Alert.alert('Error', 'Sharing is not available');
-                }
+                await MediaLibrary.saveToLibraryAsync(manipResult.uri);
+                Alert.alert('موفقیت', 'عکس با کیفیت عالی و سایز دقیق ذخیره شد.');
             }
         } catch (error) {
             console.error(error);
-            Alert.alert('Error', 'Failed to share');
+            Alert.alert('خطا', 'مشکل در ذخیره عکس');
         }
     };
 
@@ -179,9 +203,6 @@ export default function ImageCanvas() {
         setCropSize({ width: w, height: h });
         setActiveCropTool('aspect');
     };
-
-    const handleStretchX = (val: number) => { stretchX.setValue(val); if (isLocked) stretchY.setValue(val); };
-    const handleStretchY = (val: number) => { stretchY.setValue(val); if (isLocked) stretchX.setValue(val); };
 
     const rotate90 = () => { currentRotation.current += 90; Animated.timing(rotation, { toValue: currentRotation.current, duration: 200, useNativeDriver: false }).start(); };
     const toggleFlipX = () => { currentFlipX.current = currentFlipX.current === 0 ? 180 : 0; Animated.timing(flipX, { toValue: currentFlipX.current, duration: 200, useNativeDriver: false }).start(); };
@@ -202,16 +223,8 @@ export default function ImageCanvas() {
     };
 
     const pickWatermarkImage = async () => {
-        let result = await ImagePicker.launchImageLibraryAsync({
-            mediaTypes: ['images'],
-            allowsEditing: true,
-            quality: 1,
-        });
-
-        if (!result.canceled) {
-            setWmImageUri(result.assets[0].uri);
-            setActiveWatermarkTool('image');
-        }
+        let result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: true, quality: 1 });
+        if (!result.canceled) { setWmImageUri(result.assets[0].uri); setActiveWatermarkTool('image'); }
     };
 
     const spin = rotation.interpolate({ inputRange: [-3600, 3600], outputRange: ['-3600deg', '3600deg'] });
@@ -230,16 +243,7 @@ export default function ImageCanvas() {
         return (
             <View style={styles.controlRow}>
                 <MaterialCommunityIcons name={iconName} size={22} color={theme.text} />
-                <Slider
-                    style={styles.largeSlider}
-                    minimumValue={min}
-                    maximumValue={max}
-                    value={value}
-                    onValueChange={(val) => updateAdjustment(key, val)}
-                    minimumTrackTintColor={theme.primary}
-                    maximumTrackTintColor={theme.border}
-                    thumbTintColor={theme.text}
-                />
+                <Slider style={styles.largeSlider} minimumValue={min} maximumValue={max} value={value} onValueChange={(val) => updateAdjustment(key, val)} minimumTrackTintColor={theme.primary} maximumTrackTintColor={theme.border} thumbTintColor={theme.text} />
                 <TouchableOpacity style={[styles.resetMiniButton, { backgroundColor: theme.inputBg }]} onPress={() => updateAdjustment(key, defaultVal)}>
                     <MaterialCommunityIcons name="reload" size={18} color={theme.primary} />
                 </TouchableOpacity>
@@ -253,11 +257,11 @@ export default function ImageCanvas() {
 
             <View style={[styles.topBar, { backgroundColor: theme.bg }]}>
                 <View style={styles.topBarLeft}>
+                    <TouchableOpacity style={styles.topIconBtn} onPress={() => BackHandler.exitApp()}>
+                        <MaterialCommunityIcons name="power" size={26} color="#FF3B30" />
+                    </TouchableOpacity>
                     <TouchableOpacity style={styles.topIconBtn} onPress={handleSaveExport}>
                         <MaterialCommunityIcons name="content-save" size={26} color={theme.primary} />
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.topIconBtn} onPress={handleShare}>
-                        <MaterialCommunityIcons name="share-variant" size={26} color={theme.primary} />
                     </TouchableOpacity>
                     <TouchableOpacity style={styles.topIconBtn} onPress={undo} disabled={!canUndo}>
                         <MaterialCommunityIcons name="undo" size={24} color={canUndo ? theme.text : theme.textMuted} />
@@ -290,41 +294,25 @@ export default function ImageCanvas() {
 
                 <ViewShot
                     ref={viewShotRef}
-                    options={{ format: 'jpg', quality: 0.9 }}
+                    options={{ format: 'png', quality: 1 }} 
                     style={{ width: displayW, height: displayH }}
                 >
-                    {/* جلوگیری از کرش با استفاده از ویژگی کلاپس‌ایبل */}
-                    <View collapsable={false} style={{ flex: 1, overflow: 'hidden', backgroundColor: theme.canvasBg }}>
-                        <Animated.View
-                            style={[styles.imageContainer, { transform: [{ translateX: pan.x }, { translateY: pan.y }, { scale: scale }, { scaleX: stretchX }, { scaleY: stretchY }, { rotate: spin }, { rotateY: flipXRot }, { rotateX: flipYRot }] }]}
-                            {...panResponder.panHandlers}
-                        >
+                    <View collapsable={false} style={{ flex: 1, overflow: 'hidden', backgroundColor: cropBgColor === 'transparent' ? 'transparent' : cropBgColor }}>
+                        <Animated.View style={[styles.imageContainer, { transform: [{ translateX: pan.x }, { translateY: pan.y }, { scale: scale }, { scaleX: stretchX }, { scaleY: stretchY }, { rotate: spin }, { rotateY: flipXRot }, { rotateX: flipYRot }] }]} {...panResponder.panHandlers}>
                             <Animated.Image source={{ uri: image.uri }} style={[styles.image, { opacity: adjustments.contrast < 1 ? adjustments.contrast : 1 }]} resizeMode="contain" />
-
                             <View style={[StyleSheet.absoluteFill, { backgroundColor: adjustments.brightness > 0 ? '#FFF' : '#000', opacity: Math.abs(adjustments.brightness) * 0.5 }]} pointerEvents="none" />
                             <View style={[StyleSheet.absoluteFill, { backgroundColor: adjustments.warmth > 0 ? '#FFA500' : '#0000FF', opacity: Math.abs(adjustments.warmth) * 0.2 }]} pointerEvents="none" />
                             <View style={[StyleSheet.absoluteFill, { backgroundColor: adjustments.saturation > 1 ? '#FF6600' : '#808080', opacity: Math.abs(adjustments.saturation - 1) * 0.3 }]} pointerEvents="none" />
                         </Animated.View>
 
-                        <WatermarkOverlay
-                            isActive={activeCategory === 'watermark'}
-                            text={wmText}
-                            imageUri={wmImageUri}
-                            fontSize={wmSize}
-                            color={wmColor}
-                            bgColor={wmBgColor}
-                            fontFamily={wmFont}
-                            opacity={wmOpacity}
-                            rotation={wmRotation}
-                        />
+                        <WatermarkOverlay isActive={activeCategory === 'watermark'} text={wmText} imageUri={wmImageUri} fontSize={wmSize} color={wmColor} bgColor={wmBgColor} fontFamily={wmFont} opacity={wmOpacity} rotation={wmRotation} />
                     </View>
                 </ViewShot>
 
                 {activeCategory === 'crop' && (<CropFrame width={displayW} height={displayH} />)}
             </View>
 
-            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={[styles.toolsArea, { backgroundColor: theme.surface }]}>
-
+            <KeyboardAvoidingView behavior="padding" keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20} style={[styles.toolsArea, { backgroundColor: theme.surface }]}>
                 <View style={styles.topControlPanel}>
                     {activeCategory === 'adjust' && renderAdjustControl()}
 
@@ -341,22 +329,12 @@ export default function ImageCanvas() {
                     {activeCategory === 'crop' && activeCropTool === 'stretch' && (
                         <View style={styles.stretchContainer}>
                             <View style={styles.stretchSliders}>
-                                <View style={styles.stretchRow}>
-                                    <Text style={[styles.toolLabelSmall, { color: theme.textMuted }]}>W</Text>
-                                    <Slider style={styles.slider} minimumValue={0.5} maximumValue={3} value={1} onValueChange={(val) => { stretchX.setValue(val); if (isLocked) stretchY.setValue(val); }} minimumTrackTintColor={theme.primary} maximumTrackTintColor={theme.border} thumbTintColor={theme.text} />
-                                </View>
-                                <View style={styles.stretchRow}>
-                                    <Text style={[styles.toolLabelSmall, { color: theme.textMuted }]}>H</Text>
-                                    <Slider style={styles.slider} minimumValue={0.5} maximumValue={3} value={1} onValueChange={(val) => { stretchY.setValue(val); if (isLocked) stretchX.setValue(val); }} minimumTrackTintColor={theme.primary} maximumTrackTintColor={theme.border} thumbTintColor={theme.text} />
-                                </View>
+                                <View style={styles.stretchRow}><Text style={[styles.toolLabelSmall, { color: theme.textMuted }]}>W</Text><Slider style={styles.slider} minimumValue={0.5} maximumValue={3} value={1} onValueChange={(val) => { stretchX.setValue(val); if (isLocked) stretchY.setValue(val); }} minimumTrackTintColor={theme.primary} maximumTrackTintColor={theme.border} thumbTintColor={theme.text} /></View>
+                                <View style={styles.stretchRow}><Text style={[styles.toolLabelSmall, { color: theme.textMuted }]}>H</Text><Slider style={styles.slider} minimumValue={0.5} maximumValue={3} value={1} onValueChange={(val) => { stretchY.setValue(val); if (isLocked) stretchX.setValue(val); }} minimumTrackTintColor={theme.primary} maximumTrackTintColor={theme.border} thumbTintColor={theme.text} /></View>
                             </View>
                             <View style={styles.stretchActions}>
-                                <TouchableOpacity style={styles.stretchBtn} onPress={() => setIsLocked(!isLocked)}>
-                                    <MaterialCommunityIcons name={isLocked ? "link" : "link-variant-off"} size={18} color={isLocked ? theme.primary : theme.text} />
-                                </TouchableOpacity>
-                                <TouchableOpacity style={styles.stretchBtn} onPress={() => { stretchX.setValue(1); stretchY.setValue(1); }}>
-                                    <MaterialCommunityIcons name="refresh" size={18} color={theme.text} />
-                                </TouchableOpacity>
+                                <TouchableOpacity style={styles.stretchBtn} onPress={() => setIsLocked(!isLocked)}><MaterialCommunityIcons name={isLocked ? "link" : "link-variant-off"} size={18} color={isLocked ? theme.primary : theme.text} /></TouchableOpacity>
+                                <TouchableOpacity style={styles.stretchBtn} onPress={() => { stretchX.setValue(1); stretchY.setValue(1); }}><MaterialCommunityIcons name="refresh" size={18} color={theme.text} /></TouchableOpacity>
                             </View>
                         </View>
                     )}
@@ -370,36 +348,35 @@ export default function ImageCanvas() {
                         </View>
                     )}
 
+                    {activeCategory === 'crop' && activeCropTool === 'bgcolor' && (
+                        <View style={styles.actionIconRow}>
+                            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ alignItems: 'center', paddingHorizontal: 15, height: 50 }}>
+                                {colorsList.map(color => (
+                                    <TouchableOpacity key={color} onPress={() => setCropBgColor(color)} style={[styles.colorCircle, { backgroundColor: color === 'transparent' ? '#333' : color, borderColor: theme.border, borderWidth: 1 }, cropBgColor === color && { borderColor: theme.primary, borderWidth: 2 }]}>
+                                        {color === 'transparent' && <MaterialCommunityIcons name="block-helper" size={14} color="#FFF" style={{ alignSelf: 'center', marginTop: 4 }} />}
+                                    </TouchableOpacity>
+                                ))}
+                                <TextInput style={{ width: 70, height: 30, borderRadius: 8, borderColor: theme.border, borderWidth: 1, color: theme.text, textAlign: 'center', fontSize: 12, marginLeft: 10, backgroundColor: theme.inputBg }} placeholder="#HEX" placeholderTextColor={theme.textMuted} onSubmitEditing={(e) => setCropBgColor(e.nativeEvent.text)} />
+                            </ScrollView>
+                        </View>
+                    )}
+
                     {activeCategory === 'watermark' && (
                         <View style={{ flex: 1, justifyContent: 'center' }}>
-                            {activeWatermarkTool === 'text' && (
-                                <TextInput style={[styles.wmTextInput, { backgroundColor: theme.inputBg, color: theme.text }]} value={wmText} onChangeText={setWmText} placeholder="Watermark..." placeholderTextColor={theme.textMuted} />
-                            )}
+                            {activeWatermarkTool === 'text' && (<TextInput style={[styles.wmTextInput, { backgroundColor: theme.inputBg, color: theme.text }]} value={wmText} onChangeText={setWmText} placeholder="Watermark..." placeholderTextColor={theme.textMuted} />)}
                             {activeWatermarkTool === 'font' && (
                                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ alignItems: 'center', paddingHorizontal: 15 }}>
-                                    {fontsList.map(font => (
-                                        <TouchableOpacity key={font} onPress={() => setWmFont(font)} style={[styles.fontItem, { backgroundColor: theme.inputBg }, wmFont === font && { borderColor: theme.primary, borderWidth: 1 }]}>
-                                            <Text style={{ color: theme.text, fontFamily: font, fontSize: 14 }}>{font}</Text>
-                                        </TouchableOpacity>
-                                    ))}
+                                    {fontsList.map(font => (<TouchableOpacity key={font} onPress={() => setWmFont(font)} style={[styles.fontItem, { backgroundColor: theme.inputBg }, wmFont === font && { borderColor: theme.primary, borderWidth: 1 }]}><Text style={{ color: theme.text, fontFamily: font, fontSize: 14 }}>{font}</Text></TouchableOpacity>))}
                                 </ScrollView>
                             )}
                             {activeWatermarkTool === 'color' && (
                                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ alignItems: 'center', paddingHorizontal: 15 }}>
-                                    {colorsList.map(color => (
-                                        <TouchableOpacity key={color} onPress={() => setWmColor(color)} style={[styles.colorCircle, { backgroundColor: color === 'transparent' ? '#333' : color, borderColor: theme.border, borderWidth: 1 }, wmColor === color && { borderColor: theme.primary, borderWidth: 2 }]}>
-                                            {color === 'transparent' && <MaterialCommunityIcons name="block-helper" size={14} color="#FFF" style={{ alignSelf: 'center', marginTop: 4 }} />}
-                                        </TouchableOpacity>
-                                    ))}
+                                    {colorsList.map(color => (<TouchableOpacity key={color} onPress={() => setWmColor(color)} style={[styles.colorCircle, { backgroundColor: color === 'transparent' ? '#333' : color, borderColor: theme.border, borderWidth: 1 }, wmColor === color && { borderColor: theme.primary, borderWidth: 2 }]}>{color === 'transparent' && <MaterialCommunityIcons name="block-helper" size={14} color="#FFF" style={{ alignSelf: 'center', marginTop: 4 }} />}</TouchableOpacity>))}
                                 </ScrollView>
                             )}
                             {activeWatermarkTool === 'bg' && (
                                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ alignItems: 'center', paddingHorizontal: 15 }}>
-                                    {colorsList.map(color => (
-                                        <TouchableOpacity key={color} onPress={() => setWmBgColor(color)} style={[styles.colorCircle, { backgroundColor: color === 'transparent' ? '#333' : color, borderColor: theme.border, borderWidth: 1 }, wmBgColor === color && { borderColor: theme.primary, borderWidth: 2 }]}>
-                                            {color === 'transparent' && <MaterialCommunityIcons name="block-helper" size={14} color="#FFF" style={{ alignSelf: 'center', marginTop: 4 }} />}
-                                        </TouchableOpacity>
-                                    ))}
+                                    {colorsList.map(color => (<TouchableOpacity key={color} onPress={() => setWmBgColor(color)} style={[styles.colorCircle, { backgroundColor: color === 'transparent' ? '#333' : color, borderColor: theme.border, borderWidth: 1 }, wmBgColor === color && { borderColor: theme.primary, borderWidth: 2 }]}>{color === 'transparent' && <MaterialCommunityIcons name="block-helper" size={14} color="#FFF" style={{ alignSelf: 'center', marginTop: 4 }} />}</TouchableOpacity>))}
                                 </ScrollView>
                             )}
                             {activeWatermarkTool === 'size' && (
@@ -443,6 +420,7 @@ export default function ImageCanvas() {
                             <TouchableOpacity style={[styles.subToolBtn, { backgroundColor: theme.inputBg }, activeCropTool === 'custom' && { backgroundColor: theme.primary }]} onPress={() => setActiveCropTool('custom')}><MaterialCommunityIcons name="pencil-ruler" size={18} color={activeCropTool === 'custom' ? '#000' : theme.text} /><Text style={[styles.subToolText, { color: activeCropTool === 'custom' ? '#000' : theme.text }]}>Custom</Text></TouchableOpacity>
                             <TouchableOpacity style={[styles.subToolBtn, { backgroundColor: theme.inputBg }, activeCropTool === 'stretch' && { backgroundColor: theme.primary }]} onPress={() => setActiveCropTool('stretch')}><MaterialCommunityIcons name="arrow-expand-all" size={18} color={activeCropTool === 'stretch' ? '#000' : theme.text} /><Text style={[styles.subToolText, { color: activeCropTool === 'stretch' ? '#000' : theme.text }]}>Stretch</Text></TouchableOpacity>
                             <TouchableOpacity style={[styles.subToolBtn, { backgroundColor: theme.inputBg }, activeCropTool === 'rotate' && { backgroundColor: theme.primary }]} onPress={() => setActiveCropTool('rotate')}><MaterialCommunityIcons name="rotate-3d-variant" size={18} color={activeCropTool === 'rotate' ? '#000' : theme.text} /><Text style={[styles.subToolText, { color: activeCropTool === 'rotate' ? '#000' : theme.text }]}>Rotate</Text></TouchableOpacity>
+                            <TouchableOpacity style={[styles.subToolBtn, { backgroundColor: theme.inputBg }, activeCropTool === 'bgcolor' && { backgroundColor: theme.primary }]} onPress={() => setActiveCropTool('bgcolor')}><MaterialCommunityIcons name="format-color-fill" size={18} color={activeCropTool === 'bgcolor' ? '#000' : theme.text} /><Text style={[styles.subToolText, { color: activeCropTool === 'bgcolor' ? '#000' : theme.text }]}>Bg Color</Text></TouchableOpacity>
                         </ScrollView>
                     )}
 
@@ -465,7 +443,6 @@ export default function ImageCanvas() {
                     <TouchableOpacity style={styles.mainTab} onPress={() => setActiveCategory('crop')}><Text style={[styles.mainTabText, { color: theme.textMuted }, activeCategory === 'crop' && { color: theme.primary, fontWeight: 'bold' }]}>Crop</Text></TouchableOpacity>
                     <TouchableOpacity style={styles.mainTab} onPress={() => setActiveCategory('watermark')}><Text style={[styles.mainTabText, { color: theme.textMuted }, activeCategory === 'watermark' && { color: theme.primary, fontWeight: 'bold' }]}>Watermark</Text></TouchableOpacity>
                 </View>
-
             </KeyboardAvoidingView>
         </View>
     );

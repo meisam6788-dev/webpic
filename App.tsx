@@ -53,7 +53,7 @@ export default function App() {
             <StatusBar style="light" />
 
             <View style={styles.header}>
-                <Text style={styles.headerTitle}>webpic.</Text>
+                <Text style={styles.headerTitle}>webpic</Text>
             </View>
 
             <View style={styles.canvasContainer}>
@@ -83,13 +83,13 @@ const styles = StyleSheet.create({
         backgroundColor: '#050505',
     },
     header: {
-        marginTop: 60,
-        paddingHorizontal: 24,
-        paddingBottom: 10,
+        marginTop: 50,
+        paddingHorizontal: 5,
+        paddingBottom: 5,
     },
     headerTitle: {
         color: '#FFFFFF',
-        fontSize: 28,
+        fontSize: 20,
         fontWeight: '300',
         letterSpacing: 2,
     },

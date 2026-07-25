@@ -3,13 +3,15 @@
     "name": "webpic",
     "slug": "webpic",
     "version": "1.0.0",
-    "orientation": "portrait",
-    "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "jsEngine": "hermes",
+
     "ios": {
+      "bundleIdentifier": "com.meisam6788.webpic",
+      "buildNumber": "1",
       "supportsTablet": true
     },
     "android": {
+      "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -17,18 +19,20 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.meisam6788.webpic"
-    },
-    "web": {
-      "favicon": "./assets/favicon.png"
-    },
-    "plugins": [
-      "expo-sharing"
-    ],
-    "extra": {
-      "eas": {
-        "projectId": "1d78f799-a7ec-4775-b855-375289ecf4b3"
+      "package": "com.meisam6788.webpic",
+      "versionCode":1
+      },
+      "web": {
+        "favicon": "./assets/favicon.png"
+      },
+      "plugins": [
+        "expo-sharing",
+        "expo-font"
+      ],
+      "extra": {
+        "eas": {
+          "projectId": "1d78f799-a7ec-4775-b855-375289ecf4b3"
+        }
       }
     }
-  }
 }
